@@ -1,0 +1,8 @@
+---
+ansible_user: "root"
+client_name: "router"
+
+host_ip: "xxx.xxx.xxx.xxx"
+
+network: "10.x.x.1/24"
+port_awg: "35456"

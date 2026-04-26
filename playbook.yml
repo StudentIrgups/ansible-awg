@@ -1,0 +1,10 @@
+---
+- name: Setup AWG on remote host
+  hosts: remote-host
+  become: yes
+  vars_files:
+    - inventory/production/group_vars/all/vars.yml
+    - inventory/production/group_vars/all/vault.yml
+  
+  roles:
+    - setup-awg

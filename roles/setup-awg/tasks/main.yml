@@ -1,0 +1,258 @@
+---
+- name: Backup sources.list
+  copy:
+    src: /etc/apt/sources.list
+    dest: /etc/apt/sources.list.backup
+    remote_src: yes
+
+- name: Enable deb-src repositories
+  replace:
+    path: /etc/apt/sources.list
+    regexp: '^# deb-src'
+    replace: 'deb-src'    
+
+- name: Update and upgrade apt packages
+  apt:
+    update_cache: yes
+    upgrade: yes    
+
+- name: Enable IP forwarding for Amnezia
+  copy:
+    content: "net.ipv4.ip_forward = 1\n"
+    dest: /etc/sysctl.d/00-amnezia.conf
+    mode: '0644'
+
+- name: Reboot host
+  command: reboot
+  async: 1
+  poll: 0
+
+- name: Wait for host to come back
+  wait_for_connection:
+    delay: 10
+    timeout: 300    
+
+- name: Apply sysctl settings
+  command: sysctl -p /etc/sysctl.d/00-amnezia.conf    
+
+- name: Create amneziawg directory
+  file:
+    path: "/home/{{ ansible_user }}/awg"
+    state: directory
+    mode: '0755'    
+
+- name: Add amneziawg PPA
+  apt_repository:
+    repo: ppa:amnezia/ppa
+    state: present
+
+- name: Install amneziawg
+  apt:
+    name: amneziawg
+    state: present
+    update_cache: yes    
+
+- name: Check awg version
+  command: awg --version
+  register: awg_version
+
+- name: Display awg version
+  debug:
+    var: awg_version.stdout    
+
+- name: Check if amnezia kernel module is loaded
+  command: lsmod | grep amnezia
+  register: amnezia_module
+  failed_when: false
+  changed_when: false
+
+- name: Check amnezia module with shell
+  shell: lsmod | grep amnezia
+  register: amnezia_module
+  failed_when: false
+  changed_when: false
+
+- name: Display result
+  debug:
+    var: amnezia_module.stdout
+
+- name: Get amneziawg module version
+  command: modinfo amneziawg | grep ver
+  register: modinfo_output
+  changed_when: false
+  failed_when: false
+
+- name: Display version
+  debug:
+    var: modinfo_output.stdout        
+
+- name: Install required packages
+  apt:
+    name:
+      - curl
+      - wget
+      - python3
+      - python3-pip
+    state: present
+    update_cache: yes
+
+- name: Install qrcode via pip3
+  pip:
+    name: 
+      - qrcode
+      - Pillow
+    executable: pip3
+
+
+- name: Create directory and download awgcfg.py
+  block:
+    - name: Create awg directory
+      file:
+        path: "/home/{{ ansible_user }}/awg"
+        state: directory
+        mode: '0755'
+
+    - name: Download awgcfg.py
+      get_url:
+        url: https://gist.githubusercontent.com/remittor/8c3d9ff293b2ba4b13c367cc1a69f9eb/raw/awgcfg.py
+        dest: "/home/{{ ansible_user }}/awg/awgcfg.py"
+        mode: '0755'
+
+- name: Check if awg0 config exists
+  stat:
+    path: /etc/amnezia/amneziawg/awg0.conf
+  register: awg_config_stat
+
+- name: Ask to recreate config
+  pause:
+    prompt: "awg0 config exists. Recreate? (yes/no)"
+  register: recreate_answer
+  when: awg_config_stat.stat.exists
+
+- name: Regenerate awg0 config
+  block:
+    - name: Strart generate
+      shell: |
+        cd /home/{{ ansible_user }}/awg
+        rm -f /etc/amnezia/amneziawg/awg0.conf .main.config
+        python3 awgcfg.py --make /etc/amnezia/amneziawg/awg0.conf -i {{ network }} -p {{ port_awg }}
+      register: awg_config
+    - name: Show config generation output
+      debug:
+        var: awg_config.stdout_lines  
+  when: 
+    - not awg_config_stat.stat.exists or recreate_answer.user_input == "yes"
+
+- name: Create client configs with awgcfg.py
+  shell: |
+    rm -f _defclient.config 
+    python3 awgcfg.py --create
+  args:
+    chdir: "/home/{{ ansible_user }}/awg"    
+  register: creation_config
+
+- name: Show creation config output
+  debug:
+    var: creation_config.stdout_lines
+
+- name: Check if {{ client_name }} config exists
+  stat:
+    path: "/home/{{ ansible_user }}/awg/{{ client_name }}.conf"
+  register: awg_client_config_stat
+
+- name: Ask to recreate {{ client_name }} config
+  pause:
+    prompt: "{{ client_name }}.conf config exists. Recreate? (yes/no)"
+  register: recreate_answer
+  when: awg_client_config_stat.stat.exists    
+
+- name: Add client and fetch config
+  block:
+    - name: Remove client from awg config
+      command:
+        cmd: python3 awgcfg.py -d "{{ client_name }}"
+        chdir: "/home/{{ ansible_user }}/awg"
+      register: remove_client
+      failed_when: false  
+
+    - name: Add client
+      shell: |
+        rm -rf "{{ client_name }}"
+        python3 awgcfg.py -a "{{ client_name }}"
+      args:
+        chdir: "/home/{{ ansible_user }}/awg"
+      register: add_client
+
+    - name: Add client output
+      debug:
+        var: add_client.stdout_lines
+
+    - name: Show client config as QR code
+      command:
+        cmd: python3 awgcfg.py -c -q
+        chdir: "/home/{{ ansible_user }}/awg"      
+
+    - name: Fetch client config
+      fetch:
+        src: "/home/{{ ansible_user }}/awg/{{ client_name }}.conf"
+        dest: "./{{ client_name }}.conf"
+        flat: yes
+  when: 
+  - not awg_client_config_stat.stat.exists or recreate_answer.user_input == "yes"
+
+- name: Fetch QR code if generated
+  fetch:
+    src: "/home/{{ ansible_user }}/awg/{{ client_name }}.png"
+    dest: "./{{ client_name }}.png"
+    flat: yes
+  failed_when: false
+
+- name: Stop awg0 if exists
+  command: awg-quick down awg0
+  failed_when: false
+
+- name: Start awg0 interface
+  command: awg-quick up awg0 
+  register: start_awg0_int
+
+- name: Show starting awg0 interface output
+  debug: 
+    var: start_awg0_int.stdout_lines  
+
+- name: Show awg status
+  command: awg show
+  register: awg_status
+  changed_when: false
+
+- name: Display awg status
+  debug:
+    var: awg_status.stdout_lines  
+
+- name: Stop awg0 interface
+  command: awg-quick down awg0
+  become: yes    
+
+- name: Enable and start awg-quick service
+  systemd:
+    name: awg-quick@awg0
+    enabled: yes
+    state: started  
+
+- name: Start awg0 interface
+  command: awg-quick up awg0 
+  register: start_awg0_int
+
+- name: Show awg-quick output
+  debug:
+    msg: |
+      STDOUT: {{ start_awg0_int.stdout_lines | default([]) }}
+      STDERR: {{ start_awg0_int.stderr_lines | default([]) }}
+
+- name: Check awg-quick service status
+  systemd:
+    name: awg-quick@awg0
+  register: awg_service
+
+- name: Display service status
+  debug:
+    var: awg_service.status.ActiveState  
