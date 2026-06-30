@@ -11,6 +11,10 @@
     regexp: '^# deb-src'
     replace: 'deb-src'    
 
+- name: Fix interrupted dpkg
+  command: dpkg --configure -a
+  become: yes
+
 - name: Update and upgrade apt packages
   apt:
     update_cache: yes
@@ -241,6 +245,7 @@
 - name: Start awg0 interface
   command: awg-quick up awg0 
   register: start_awg0_int
+  failed_when: false
 
 - name: Show awg-quick output
   debug:
