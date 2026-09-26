@@ -261,3 +261,45 @@
 - name: Display service status
   debug:
     var: awg_service.status.ActiveState  
+
+
+# ---------- 1. Получить список пиров ----------
+- name: Получить список пиров интерфейса {{ awg_server_iface }}
+  command: "awg show {{ awg_server_iface }} peers"
+  register: awg_peers
+  changed_when: false
+
+- name: Показать пиры
+  debug:
+    msg: "{{ awg_peers.stdout_lines }}"
+
+- name: Предупредить, если пиров нет
+  debug:
+    msg: "На интерфейсе {{ awg_server_iface }} нет пиров — нечего настраивать"
+  when: awg_peers.stdout_lines | length == 0
+
+# ---------- 2. Задать PersistentKeepalive каждому пиру ----------
+- name: Задать PersistentKeepalive = {{ awg_server_keepalive }} для каждого пира
+  command: >
+    awg set {{ awg_server_iface }}
+    peer {{ item }}
+    persistent-keepalive {{ awg_server_keepalive }}
+  loop: "{{ awg_peers.stdout_lines }}"
+  when: awg_peers.stdout_lines | length > 0
+  changed_when: true
+
+# ---------- 3. Сохранить конфиг на диск ----------
+- name: Сохранить конфиг (awg-quick save)
+  command: "awg-quick save {{ awg_server_iface }}"
+  changed_when: true
+  when: awg_peers.stdout_lines | length > 0
+
+# ---------- 4. Проверить, что keepalive применился ----------
+- name: Прочитать текущий keepalive
+  command: "awg show {{ awg_server_iface }} persistent-keepalive"
+  register: awg_keepalive_check
+  changed_when: false
+
+- name: Показать keepalive
+  debug:
+    msg: "{{ awg_keepalive_check.stdout_lines }}"
